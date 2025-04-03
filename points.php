@@ -7,6 +7,9 @@ if (!file_exists($cred_file)) {
     die('Error: Credentials file not found.');
 }
 $credentials = file_get_contents($cred_file);
+if ($credentials === false) {
+    die('Error: Unable to read credentials file.');
+}
 list($db_user, $db_pass) = explode(':', trim($credentials));
 
 // Connect to database
@@ -77,15 +80,15 @@ if (isset($_POST['edit_user']) && isset($_SESSION['user_id']) && $_SESSION['is_a
     $stmt->close();
 }
 
-// Handle add points entry
+// Handle add points entry (admin only)
 $message = '';
-$prev_datetime = isset($_POST['prev_datetime']) && isset($_POST['add_points_another']) ? $_POST['prev_datetime'] : date('Y-m-d\TH:i');
+$prev_datetime = isset($_POST['prev_datetime']) && isset($_POST['add_points_another']) ? $_POST['prev_datetime'] : '';
 $prev_user_id = isset($_POST['prev_user_id']) && isset($_POST['add_points_another']) ? $_POST['prev_user_id'] : (isset($_SESSION['user_id']) ? $_SESSION['user_id'] : '');
 $prev_vendor_id = isset($_POST['prev_vendor_id']) && isset($_POST['add_points_another']) ? $_POST['prev_vendor_id'] : '';
 $prev_amount = isset($_POST['prev_amount']) && isset($_POST['add_points_another']) ? $_POST['prev_amount'] : '';
 $prev_description = isset($_POST['prev_description']) && isset($_POST['add_points_another']) ? $_POST['prev_description'] : '';
 
-if ((isset($_POST['add_points']) || isset($_POST['add_points_another'])) && isset($_SESSION['user_id'])) {
+if ((isset($_POST['add_points']) || isset($_POST['add_points_another'])) && isset($_SESSION['user_id']) && $_SESSION['is_admin'] == 1) {
     $datetime = $_POST['datetime'];
     $user_id = $_POST['user_id'];
     $vendor_id = $_POST['vendor_id'];
@@ -120,9 +123,35 @@ if ((isset($_POST['add_points']) || isset($_POST['add_points_another'])) && isse
     }
 }
 
-// Handle transfer points
+// Handle spend points
+$spend_message = '';
+if (isset($_POST['spend_points']) && isset($_SESSION['user_id'])) {
+    $datetime = $_POST['datetime'];
+    $user_id = $_SESSION['user_id'];
+    $vendor_id = 1; // Hardcoded to Amex
+    $amount = (int)$_POST['amount'];
+    $description = $_POST['description'];
+
+    if ($amount > 0) {
+        $neg_amount = -$amount;
+        $stmt = $conn->prepare("INSERT INTO points_register (datetime, vendor_id, user_id, amount, description) VALUES (?, ?, ?, ?, ?)");
+        $stmt->bind_param("siiis", $datetime, $vendor_id, $user_id, $neg_amount, $description);
+        $stmt->execute();
+        $stmt->close();
+
+        $stmt = $conn->prepare("SELECT firstname FROM users WHERE id = ?");
+        $stmt->bind_param("i", $user_id);
+        $stmt->execute();
+        $user = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+
+        $spend_message = number_format($amount, 0, '.', ',') . " Amex Points spent by " . htmlspecialchars($user['firstname']) . "!";
+    }
+}
+
+// Handle transfer points (admin only)
 $transfer_message = '';
-$prev_transfer_datetime = isset($_POST['prev_transfer_datetime']) && isset($_POST['transfer_points_another']) ? $_POST['prev_transfer_datetime'] : date('Y-m-d\TH:i');
+$prev_transfer_datetime = isset($_POST['prev_transfer_datetime']) && isset($_POST['transfer_points_another']) ? $_POST['prev_transfer_datetime'] : '';
 $prev_from_user_id = isset($_POST['prev_from_user_id']) && isset($_POST['transfer_points_another']) ? $_POST['prev_from_user_id'] : '';
 $prev_to_user_id = isset($_POST['prev_to_user_id']) && isset($_POST['transfer_points_another']) ? $_POST['prev_to_user_id'] : '';
 $prev_transfer_amount = isset($_POST['prev_transfer_amount']) && isset($_POST['transfer_points_another']) ? $_POST['prev_transfer_amount'] : '';
@@ -189,7 +218,7 @@ if ((isset($_POST['transfer_points']) || isset($_POST['transfer_points_another']
         .menu li { float: left; }
         .menu li a, .menu li button { display: block; padding: 14px 16px; text-decoration: none; color: black; border: none; background: none; cursor: pointer; }
         .menu li a.active { font-weight: bold; }
-        table { border-collapse: collapse; width: 90%; margin: 20px 0; }
+        table.summary { width: 300px; border-collapse: collapse; margin: 20px 0; }
         th, td { border: 1px solid #ccc; padding: 5px; text-align: left; }
         th { background-color: #f2f2f2; font-weight: bold; }
         .bold { font-weight: bold; }
@@ -199,10 +228,10 @@ if ((isset($_POST['transfer_points']) || isset($_POST['transfer_points_another']
         .total-row { background-color: #f5f5f5; }
         .filter-form { margin-bottom: 10px; }
         .filter-form select, .filter-form input { margin-right: 10px; }
+        .form-table { border-spacing: 2px; padding: 2px; }
     </style>
     <script>
         document.addEventListener('DOMContentLoaded', function() {
-            // Function to format date as Y-m-d\TH:i
             function formatDateTime(date) {
                 const year = date.getFullYear();
                 const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -212,13 +241,16 @@ if ((isset($_POST['transfer_points']) || isset($_POST['transfer_points_another']
                 return `${year}-${month}-${day}T${hours}:${minutes}`;
             }
 
-            // Set Add Points Entry datetime to browser local time if not prefilled
             const addDateTime = document.getElementById('add_datetime');
             if (addDateTime && !addDateTime.value) {
                 addDateTime.value = formatDateTime(new Date());
             }
 
-            // Set Transfer Points datetime to browser local time if not prefilled
+            const spendDateTime = document.getElementById('spend_datetime');
+            if (spendDateTime && !spendDateTime.value) {
+                spendDateTime.value = formatDateTime(new Date());
+            }
+
             const transferDateTime = document.getElementById('transfer_datetime');
             if (transferDateTime && !transferDateTime.value) {
                 transferDateTime.value = formatDateTime(new Date());
@@ -234,9 +266,8 @@ if ((isset($_POST['transfer_points']) || isset($_POST['transfer_points_another']
                     <li><a href="?page=manage_users" class="<?php echo (isset($_GET['page']) && $_GET['page'] == 'manage_users') ? 'active' : ''; ?>">Manage Users</a></li>
                     <li><a href="?page=add_points" class="<?php echo (isset($_GET['page']) && $_GET['page'] == 'add_points') ? 'active' : ''; ?>">Add Points Entry</a></li>
                     <li><a href="?page=transfer_points" class="<?php echo (isset($_GET['page']) && $_GET['page'] == 'transfer_points') ? 'active' : ''; ?>">Transfer Points</a></li>
-                <?php else: ?>
-                    <li><a href="?page=add_points" class="<?php echo (isset($_GET['page']) && $_GET['page'] == 'add_points') ? 'active' : ''; ?>">Add Points Entry</a></li>
                 <?php endif; ?>
+                <li><a href="?page=spend_points" class="<?php echo (isset($_GET['page']) && $_GET['page'] == 'spend_points') ? 'active' : ''; ?>">Spend Points</a></li>
                 <li><a href="?page=summary" class="<?php echo (!isset($_GET['page']) || $_GET['page'] == 'summary') ? 'active' : ''; ?>">Summary</a></li>
                 <li><a href="?page=register" class="<?php echo (isset($_GET['page']) && $_GET['page'] == 'register') ? 'active' : ''; ?>">Register</a></li>
                 <li><form method="post" style="display:inline;"><button type="submit" name="logout">Logout</button></form></li>
@@ -246,10 +277,16 @@ if ((isset($_POST['transfer_points']) || isset($_POST['transfer_points_another']
         <?php if (!isset($_GET['page']) || $_GET['page'] == 'summary'): ?>
             <h1>Summary</h1>
             <?php
-            $vendors = [];
-            $vendor_result = $conn->query("SELECT id, short_name FROM vendors");
-            while ($vendor = $vendor_result->fetch_assoc()) {
-                $vendors[$vendor['id']] = $vendor['short_name'];
+            if ($_SESSION['is_admin'] == 1) {
+                $vendors = [];
+                $vendor_result = $conn->query("SELECT id, short_name FROM vendors");
+                while ($vendor = $vendor_result->fetch_assoc()) {
+                    $vendors[$vendor['id']] = $vendor['short_name'];
+                }
+                $balance_query = "SELECT user_id, vendor_id, SUM(amount) as balance FROM points_register GROUP BY user_id, vendor_id";
+            } else {
+                $vendors = ['1' => 'Amex'];
+                $balance_query = "SELECT user_id, vendor_id, SUM(amount) as balance FROM points_register WHERE vendor_id = 1 GROUP BY user_id, vendor_id";
             }
 
             $users = [];
@@ -260,7 +297,7 @@ if ((isset($_POST['transfer_points']) || isset($_POST['transfer_points_another']
 
             $balances = array_fill_keys(array_keys($users), array_fill_keys(array_keys($vendors), 0));
             $vendor_totals = array_fill_keys(array_keys($vendors), 0);
-            $balance_result = $conn->query("SELECT user_id, vendor_id, SUM(amount) as balance FROM points_register GROUP BY user_id, vendor_id");
+            $balance_result = $conn->query($balance_query);
             while ($row = $balance_result->fetch_assoc()) {
                 if (isset($balances[$row['user_id']])) {
                     $balances[$row['user_id']][$row['vendor_id']] = (int)$row['balance'];
@@ -268,7 +305,7 @@ if ((isset($_POST['transfer_points']) || isset($_POST['transfer_points_another']
                 }
             }
             ?>
-            <table>
+            <table class="summary">
                 <tr>
                     <th>User</th>
                     <?php foreach ($vendors as $vendor_name): ?>
@@ -350,52 +387,116 @@ if ((isset($_POST['transfer_points']) || isset($_POST['transfer_points_another']
                 <label>Active: <input type="checkbox" name="active" checked></label><br>
                 <input type="submit" name="add_user" value="Add User">
             </form>
-        <?php elseif (isset($_GET['page']) && $_GET['page'] == 'add_points'): ?>
+        <?php elseif (isset($_GET['page']) && $_GET['page'] == 'add_points' && $_SESSION['is_admin'] == 1): ?>
             <h1>Add Points Entry</h1>
             <?php if ($message): ?>
                 <div class="success"><?php echo $message; ?></div>
             <?php endif; ?>
             <form method="post">
-                <label>Date and Time: <input type="datetime-local" id="add_datetime" name="datetime" value="<?php echo htmlspecialchars($prev_datetime); ?>" required></label><br>
-                <label>User: 
-                    <select name="user_id" required>
-                        <?php
-                        if ($_SESSION['is_admin'] == 1) {
-                            $user_result = $conn->query("SELECT id, firstname FROM users WHERE id <= 2 AND active = 1");
-                        } else {
-                            $user_result = $conn->prepare("SELECT id, firstname FROM users WHERE id = ? AND active = 1");
-                            $user_result->bind_param("i", $_SESSION['user_id']);
-                            $user_result->execute();
-                            $user_result = $user_result->get_result();
-                        }
-                        while ($user = $user_result->fetch_assoc()) {
-                            $selected = ($user['id'] == $prev_user_id) ? 'selected' : '';
-                            echo "<option value='{$user['id']}' $selected>" . htmlspecialchars($user['firstname']) . "</option>";
-                        }
-                        ?>
-                    </select>
-                </label><br>
-                <label>Vendor: 
-                    <select name="vendor_id" required>
-                        <option value="">Select Vendor</option>
-                        <?php
-                        $vendor_result = $conn->query("SELECT id, short_name FROM vendors");
-                        while ($vendor = $vendor_result->fetch_assoc()) {
-                            $selected = ($vendor['id'] == $prev_vendor_id) ? 'selected' : '';
-                            echo "<option value='{$vendor['id']}' $selected>" . htmlspecialchars($vendor['short_name']) . "</option>";
-                        }
-                        ?>
-                    </select>
-                </label><br>
-                <label>Amount: <input type="number" name="amount" value="<?php echo htmlspecialchars($prev_amount); ?>" required></label><br>
-                <label>Description: <input type="text" name="description" value="<?php echo htmlspecialchars($prev_description); ?>" required></label><br>
-                <input type="submit" name="add_points" value="Add Points Entry">
-                <input type="submit" name="add_points_another" value="Add Points Entry and Another">
+                <table class="form-table">
+                    <tr>
+                        <td>Date and Time:</td>
+                        <td><input type="datetime-local" id="add_datetime" name="datetime" value="<?php echo $prev_datetime ? htmlspecialchars($prev_datetime) : ''; ?>" required></td>
+                    </tr>
+                    <tr>
+                        <td>User:</td>
+                        <td>
+                            <select name="user_id" required>
+                                <?php
+                                $user_result = $conn->query("SELECT id, firstname FROM users WHERE id <= 2 AND active = 1");
+                                while ($user = $user_result->fetch_assoc()) {
+                                    $selected = ($user['id'] == $prev_user_id) ? 'selected' : '';
+                                    echo "<option value='{$user['id']}' $selected>" . htmlspecialchars($user['firstname']) . "</option>";
+                                }
+                                ?>
+                            </select>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>Vendor:</td>
+                        <td>
+                            <select name="vendor_id" required>
+                                <option value="">Select Vendor</option>
+                                <?php
+                                $vendor_result = $conn->query("SELECT id, short_name FROM vendors");
+                                while ($vendor = $vendor_result->fetch_assoc()) {
+                                    $selected = ($vendor['id'] == $prev_vendor_id) ? 'selected' : '';
+                                    echo "<option value='{$vendor['id']}' $selected>" . htmlspecialchars($vendor['short_name']) . "</option>";
+                                }
+                                ?>
+                            </select>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>Amount:</td>
+                        <td><input type="number" name="amount" value="<?php echo htmlspecialchars($prev_amount); ?>" required></td>
+                    </tr>
+                    <tr>
+                        <td>Description:</td>
+                        <td><input type="text" name="description" value="<?php echo htmlspecialchars($prev_description); ?>" required></td>
+                    </tr>
+                    <tr>
+                        <td colspan="2">
+                            <input type="submit" name="add_points" value="Add Points Entry">
+                            <input type="submit" name="add_points_another" value="Add Points Entry and Another">
+                        </td>
+                    </tr>
+                </table>
                 <input type="hidden" name="prev_datetime" value="<?php echo htmlspecialchars($prev_datetime); ?>">
                 <input type="hidden" name="prev_user_id" value="<?php echo htmlspecialchars($prev_user_id); ?>">
                 <input type="hidden" name="prev_vendor_id" value="<?php echo htmlspecialchars($prev_vendor_id); ?>">
                 <input type="hidden" name="prev_amount" value="<?php echo htmlspecialchars($prev_amount); ?>">
                 <input type="hidden" name="prev_description" value="<?php echo htmlspecialchars($prev_description); ?>">
+            </form>
+        <?php elseif (isset($_GET['page']) && $_GET['page'] == 'spend_points' && isset($_SESSION['user_id'])): ?>
+            <h1>Spend Points</h1>
+            <?php
+            $stmt = $conn->prepare("SELECT SUM(amount) as amex_balance FROM points_register WHERE user_id = ? AND vendor_id = 1");
+            $stmt->bind_param("i", $_SESSION['user_id']);
+            $stmt->execute();
+            $result = $stmt->get_result()->fetch_assoc();
+            $amex_balance = $result['amex_balance'] ?? 0;
+            $stmt->close();
+
+            $stmt = $conn->prepare("SELECT firstname FROM users WHERE id = ?");
+            $stmt->bind_param("i", $_SESSION['user_id']);
+            $stmt->execute();
+            $current_user = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            ?>
+            <p>Current Amex Balance: <?php echo number_format($amex_balance, 0, '.', ','); ?></p>
+            <?php if ($spend_message): ?>
+                <div class="success"><?php echo $spend_message; ?></div>
+            <?php endif; ?>
+            <form method="post">
+                <table class="form-table">
+                    <tr>
+                        <td>Date and Time:</td>
+                        <td><input type="datetime-local" id="spend_datetime" name="datetime" required></td>
+                    </tr>
+                    <tr>
+                        <td>User:</td>
+                        <td><?php echo htmlspecialchars($current_user['firstname']); ?></td>
+                    </tr>
+                    <tr>
+                        <td>Vendor:</td>
+                        <td>Amex</td>
+                    </tr>
+                    <tr>
+                        <td>Amount:</td>
+                        <td><input type="number" name="amount" min="1" required></td>
+                    </tr>
+                    <tr>
+                        <td>Description:</td>
+                        <td><input type="text" name="description" required></td>
+                    </tr>
+                    <tr>
+                        <td colspan="2">
+                            <input type="submit" name="spend_points" value="Spend Points">
+                        </td>
+                    </tr>
+                </table>
+                <input type="hidden" name="user_id" value="<?php echo $_SESSION['user_id']; ?>">
             </form>
         <?php elseif (isset($_GET['page']) && $_GET['page'] == 'register'): ?>
             <h1>Register</h1>
@@ -484,47 +585,71 @@ if ((isset($_POST['transfer_points']) || isset($_POST['transfer_points_another']
                 <div class="success"><?php echo $transfer_message; ?></div>
             <?php endif; ?>
             <form method="post">
-                <label>Date and Time: <input type="datetime-local" id="transfer_datetime" name="datetime" value="<?php echo htmlspecialchars($prev_transfer_datetime); ?>" required></label><br>
-                <label>Vendor: 
-                    <select name="vendor_id" required>
-                        <option value="">Select Vendor</option>
-                        <?php
-                        $vendor_result = $conn->query("SELECT id, short_name FROM vendors");
-                        while ($vendor = $vendor_result->fetch_assoc()) {
-                            echo "<option value='{$vendor['id']}'>" . htmlspecialchars($vendor['short_name']) . "</option>";
-                        }
-                        ?>
-                    </select>
-                </label><br>
-                <label>From User: 
-                    <select name="from_user_id" required>
-                        <option value="">Select User</option>
-                        <?php
-                        $user_result = $conn->query("SELECT id, firstname FROM users WHERE id <= 2 AND active = 1");
-                        while ($user = $user_result->fetch_assoc()) {
-                            $selected = ($user['id'] == $prev_from_user_id) ? 'selected' : '';
-                            echo "<option value='{$user['id']}' $selected>" . htmlspecialchars($user['firstname']) . "</option>";
-                        }
-                        ?>
-                    </select>
-                </label><br>
-                <label>To User: 
-                    <select name="to_user_id" required>
-                        <option value="">Select User</option>
-                        <?php
-                        $user_result = $conn->query("SELECT id, firstname FROM users WHERE id <= 2 AND active = 1");
-                        while ($user = $user_result->fetch_assoc()) {
-                            $selected = ($user['id'] == $prev_to_user_id) ? 'selected' : '';
-                            echo "<option value='{$user['id']}' $selected>" . htmlspecialchars($user['firstname']) . "</option>";
-                        }
-                        ?>
-                    </select>
-                </label><br>
-                <label>Amount: <input type="number" name="amount" min="1" value="<?php echo htmlspecialchars($prev_transfer_amount); ?>" required></label><br>
-                <label>Description: <input type="text" name="description" value="<?php echo htmlspecialchars($prev_transfer_description); ?>" required></label><br>
-                <input type="submit" name="transfer_points" value="Transfer Points">
-                <input type="submit" name="transfer_points_another" value="Transfer Points and Another">
-                <input type="hidden" name="prev_transfer_datetime" value="hidden" value="<?php echo htmlspecialchars($prev_transfer_datetime); ?>">
+                <table class="form-table">
+                    <tr>
+                        <td>Date and Time:</td>
+                        <td><input type="datetime-local" id="transfer_datetime" name="datetime" value="<?php echo $prev_transfer_datetime ? htmlspecialchars($prev_transfer_datetime) : ''; ?>" required></td>
+                    </tr>
+                    <tr>
+                        <td>Vendor:</td>
+                        <td>
+                            <select name="vendor_id" required>
+                                <option value="">Select Vendor</option>
+                                <?php
+                                $vendor_result = $conn->query("SELECT id, short_name FROM vendors");
+                                while ($vendor = $vendor_result->fetch_assoc()) {
+                                    echo "<option value='{$vendor['id']}'>" . htmlspecialchars($vendor['short_name']) . "</option>";
+                                }
+                                ?>
+                            </select>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>From User:</td>
+                        <td>
+                            <select name="from_user_id" required>
+                                <option value="">Select User</option>
+                                <?php
+                                $user_result = $conn->query("SELECT id, firstname FROM users WHERE id <= 2 AND active = 1");
+                                while ($user = $user_result->fetch_assoc()) {
+                                    $selected = ($user['id'] == $prev_from_user_id) ? 'selected' : '';
+                                    echo "<option value='{$user['id']}' $selected>" . htmlspecialchars($user['firstname']) . "</option>";
+                                }
+                                ?>
+                            </select>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>To User:</td>
+                        <td>
+                            <select name="to_user_id" required>
+                                <option value="">Select User</option>
+                                <?php
+                                $user_result = $conn->query("SELECT id, firstname FROM users WHERE id <= 2 AND active = 1");
+                                while ($user = $user_result->fetch_assoc()) {
+                                    $selected = ($user['id'] == $prev_to_user_id) ? 'selected' : '';
+                                    echo "<option value='{$user['id']}' $selected>" . htmlspecialchars($user['firstname']) . "</option>";
+                                }
+                                ?>
+                            </select>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>Amount:</td>
+                        <td><input type="number" name="amount" min="1" value="<?php echo htmlspecialchars($prev_transfer_amount); ?>" required></td>
+                    </tr>
+                    <tr>
+                        <td>Description:</td>
+                        <td><input type="text" name="description" value="<?php echo htmlspecialchars($prev_transfer_description); ?>" required></td>
+                    </tr>
+                    <tr>
+                        <td colspan="2">
+                            <input type="submit" name="transfer_points" value="Transfer Points">
+                            <input type="submit" name="transfer_points_another" value="Transfer Points and Another">
+                        </td>
+                    </tr>
+                </table>
+                <input type="hidden" name="prev_transfer_datetime" value="<?php echo htmlspecialchars($prev_transfer_datetime); ?>">
                 <input type="hidden" name="prev_from_user_id" value="<?php echo htmlspecialchars($prev_from_user_id); ?>">
                 <input type="hidden" name="prev_to_user_id" value="<?php echo htmlspecialchars($prev_to_user_id); ?>">
                 <input type="hidden" name="prev_transfer_amount" value="<?php echo htmlspecialchars($prev_transfer_amount); ?>">
@@ -532,13 +657,9 @@ if ((isset($_POST['transfer_points']) || isset($_POST['transfer_points_another']
             </form>
         <?php endif; ?>
     <?php else: ?>
+        <h1>Summary</h1>
         <?php
-        $vendors = [];
-        $vendor_result = $conn->query("SELECT id, short_name FROM vendors");
-        while ($vendor = $vendor_result->fetch_assoc()) {
-            $vendors[$vendor['id']] = substr($vendor['short_name'], 0, 1);
-        }
-
+        $vendors = ['1' => 'A']; // Amex only, first letter
         $users = [];
         $user_result = $conn->query("SELECT id, firstname FROM users WHERE id <= 2 AND active = 1");
         while ($user = $user_result->fetch_assoc()) {
@@ -547,7 +668,7 @@ if ((isset($_POST['transfer_points']) || isset($_POST['transfer_points_another']
 
         $balances = array_fill_keys(array_keys($users), array_fill_keys(array_keys($vendors), 0));
         $vendor_totals = array_fill_keys(array_keys($vendors), 0);
-        $balance_result = $conn->query("SELECT user_id, vendor_id, SUM(amount) as balance FROM points_register GROUP BY user_id, vendor_id");
+        $balance_result = $conn->query("SELECT user_id, vendor_id, SUM(amount) as balance FROM points_register WHERE vendor_id = 1 GROUP BY user_id");
         while ($row = $balance_result->fetch_assoc()) {
             if (isset($balances[$row['user_id']])) {
                 $balances[$row['user_id']][$row['vendor_id']] = (int)$row['balance'];
@@ -555,8 +676,7 @@ if ((isset($_POST['transfer_points']) || isset($_POST['transfer_points_another']
             }
         }
         ?>
-        <h1>Summary</h1>
-        <table>
+        <table class="summary">
             <tr>
                 <th>User</th>
                 <?php foreach ($vendors as $vendor_name): ?>
