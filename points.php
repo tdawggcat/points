@@ -219,8 +219,10 @@ if ((isset($_POST['transfer_points']) || isset($_POST['transfer_points_another']
         .menu li a, .menu li button { display: block; padding: 14px 16px; text-decoration: none; color: black; border: none; background: none; cursor: pointer; }
         .menu li a.active { font-weight: bold; }
         table.summary { width: 300px; border-collapse: collapse; margin: 20px 0; }
+        table.register { width: 90%; border-collapse: collapse; margin: 20px 0; }
+        .table-container { height: 50vh; overflow-y: auto; }
         th, td { border: 1px solid #ccc; padding: 5px; text-align: left; }
-        th { background-color: #f2f2f2; font-weight: bold; }
+        th { background-color: #f2f2f2; font-weight: bold; position: sticky; top: 0; }
         .bold { font-weight: bold; }
         .right { text-align: right; }
         .success { color: green; background-color: #e0ffe0; padding: 10px; margin: 10px 0; }
@@ -528,7 +530,7 @@ if ((isset($_POST['transfer_points']) || isset($_POST['transfer_points_another']
                 <input type="submit" name="apply_filters" value="Apply">
             </form>
             <?php
-            $query = "SELECT pr.datetime, v.short_name, u.firstname, pr.amount, pr.description 
+            $query = "SELECT pr.datetime, v.short_name, u.firstname, pr.amount, pr.description, pr.vendor_id, pr.user_id 
                       FROM points_register pr 
                       JOIN vendors v ON pr.vendor_id = v.id 
                       JOIN users u ON pr.user_id = u.id";
@@ -560,25 +562,41 @@ if ((isset($_POST['transfer_points']) || isset($_POST['transfer_points_another']
                 $stmt->execute();
                 $result = $stmt->get_result();
             }
+
+            $running_totals = [];
             ?>
-            <table>
-                <tr>
-                    <th>Date/Time</th>
-                    <th>Vendor</th>
-                    <th>User</th>
-                    <th>Description</th>
-                    <th class="right">Amount</th>
-                </tr>
-                <?php $row_count = 0; while ($row = $result->fetch_assoc()): $row_count++; ?>
-                    <tr class="<?php echo ($row_count % 2 == 0) ? 'alt-row' : ''; ?>">
-                        <td><?php echo date('n/j/Y H:i', strtotime($row['datetime'])); ?></td>
-                        <td><?php echo htmlspecialchars($row['short_name']); ?></td>
-                        <td><?php echo htmlspecialchars($row['firstname']); ?></td>
-                        <td><?php echo htmlspecialchars($row['description']); ?></td>
-                        <td class="right"><?php echo number_format($row['amount'], 0, '.', ','); ?></td>
+            <div class="table-container">
+                <table class="register">
+                    <tr>
+                        <th>Date/Time</th>
+                        <th>Vendor</th>
+                        <th>User</th>
+                        <th>Description</th>
+                        <th class="right">Amount</th>
+                        <th class="right">Amex</th>
+                        <th class="right">SWA</th>
                     </tr>
-                <?php endwhile; ?>
-            </table>
+                    <?php $row_count = 0; while ($row = $result->fetch_assoc()): $row_count++; ?>
+                        <?php
+                        $user_id = $row['user_id'];
+                        $vendor_id = $row['vendor_id'];
+                        if (!isset($running_totals[$user_id])) {
+                            $running_totals[$user_id] = [1 => 0, 2 => 0];
+                        }
+                        $running_totals[$user_id][$vendor_id] += (int)$row['amount'];
+                        ?>
+                        <tr class="<?php echo ($row_count % 2 == 0) ? 'alt-row' : ''; ?>">
+                            <td><?php echo date('n/j/Y H:i', strtotime($row['datetime'])); ?></td>
+                            <td><?php echo htmlspecialchars($row['short_name']); ?></td>
+                            <td><?php echo htmlspecialchars($row['firstname']); ?></td>
+                            <td><?php echo htmlspecialchars($row['description']); ?></td>
+                            <td class="right"><?php echo number_format($row['amount'], 0, '.', ','); ?></td>
+                            <td class="right"><?php echo number_format($running_totals[$user_id][1], 0, '.', ','); ?></td>
+                            <td class="right"><?php echo number_format($running_totals[$user_id][2], 0, '.', ','); ?></td>
+                        </tr>
+                    <?php endwhile; ?>
+                </table>
+            </div>
         <?php elseif (isset($_GET['page']) && $_GET['page'] == 'transfer_points' && $_SESSION['is_admin'] == 1): ?>
             <h1>Transfer Points</h1>
             <?php if ($transfer_message): ?>
